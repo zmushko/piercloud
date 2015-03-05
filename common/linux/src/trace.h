@@ -27,7 +27,7 @@
 					{ \
 						strftime(datetime, sizeof(datetime), "%b %e %Y %H:%M:%S", tmp); \
 					} \
-					fprintf(f, "- %s pid-%d %s:%d\n  ", datetime, getpid(), __FILE__, __LINE__); \
+					fprintf(f, "- %s %s:%d pid:%d\n  ", datetime, __FILE__, __LINE__, getpid()); \
 					fprintf(f, __VA_ARGS__); \
 					fprintf(f, "\n"); \
 					fclose(f); \
@@ -47,10 +47,10 @@
 					{ \
 						strftime(datetime, sizeof(datetime), "%b %e %Y %H:%M:%S", tmp); \
 					} \
-					fprintf(f, "- %s pid-%d %s:%d", datetime, getpid(), __FILE__, __LINE__); \
-					fprintf(f, "\n  *** ERROR: "); \
+					fprintf(f, "- %s %s:%d pid:%d\n  ", datetime, __FILE__, __LINE__, getpid()); \
+					fprintf(f, "*** ERROR ***:"); \
 					fprintf(f, __VA_ARGS__); \
-					fprintf(f, " ERRNO:%d> %s\n", safe_errno, strerror(safe_errno)); \
+					fprintf(f, ", errno=%d:%s\n", safe_errno, strerror(safe_errno)); \
 					fclose(f); \
 				} \
 				errno = safe_errno; \
@@ -71,10 +71,10 @@
 						{ \
 							strftime(datetime, sizeof(datetime), "%b %e %Y %H:%M:%S", tmp); \
 						} \
-						fprintf(f, "- %s pid-%d %s:%d", datetime, getpid(), __FILE__, __LINE__); \
-						fprintf(f, "\n  ABORT> "); \
+						fprintf(f, "- %s %s:%d pid:%d\n  ", datetime, __FILE__, __LINE__, getpid()); \
+						fprintf(f, "ABORT:"); \
 						fprintf(f, "%s", #A); \
-						fprintf(f, " ERRNO:%d> %s\n", safe_errno, safe_errno ? strerror(safe_errno) : ""); \
+						fprintf(f, ", errno=%d:%s\n", safe_errno, safe_errno ? strerror(safe_errno) : ""); \
 						fclose(f); \
 					} \
 					errno = safe_errno; \

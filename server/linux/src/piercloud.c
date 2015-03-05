@@ -6,6 +6,8 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <limits.h>
+#include <signal.h>
+#include <sys/select.h>
 
 #include "trace.h"
 #include "liblst.h"
@@ -16,14 +18,35 @@ extern char**	environ;
 static char**	getEnv();
 static int	Pier(long pier);
 static int	Connect(long pier);
-static void	writeHeaderLst(int Wfd, char** lst);
+static int	Respond(long pier, long pid);
+static void	addHeader(char** header, char** lst);
 
 
 #define RUN_PATH	"/tmp/piercloud"
 #define NL		"\r\n"
+#define SEC_TO_PING	20
+
+static volatile sig_atomic_t got_SIGTERM = 0;
+
+/*
+static void sig_term_handler(int sig)
+{
+	(void)sig;
+	got_SIGTERM = 1;
+}
+*/
 
 main()
 {
+	/*
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(struct sigaction));
+	sa.sa_flags = 0;
+	sa.sa_handler = sig_term_handler;
+	sigemptyset(&sa.sa_mask);
+	ASSERT(-1 == sigaction(SIGTERM, &sa, NULL));
+	*/
+
 	void** gc;
 	remove(RUN_PATH);
 	errno = 0;
@@ -57,25 +80,24 @@ main()
 		const char* request_uri = getenv("REQUEST_URI");
 		ASSERT(request_uri == NULL);
 		
-		long pier = atol(request_uri + 1);	
-		Connect(pier);
+		char* t = strchr(request_uri + 1, '/');
+		if (t == NULL)
+		{
+			Connect(atol(request_uri + 1));
+		}
+		else
+		{
+			*t = '\0';
+			Respond(atol(request_uri + 1), atol(t + 1));
+		}
 	}
 	else
 	{
-		long pier = atol(lstArgs[0]);
-		Pier(pier);
+		Pier(atol(lstArgs[0]));
 	}
 
 	mapFree(lstArgs);
 	return 0;
-}
-
-static int Open(const char* pathname, int flags, mode_t mode)
-{
-	int rval = open(pathname, flags, mode);
-	ASSERT(-1 == rval);
-
-	return rval;
 }
 
 static int MkFifo(const char* path)
@@ -93,34 +115,86 @@ static int MkFifo(const char* path)
 	return 0;
 }
 
-static int Connect(long pier)
+static int Respond(long pier, long pid)
 {
-	ASSERT(!pier);
+	ASSERT(!pier || !pid);	
 	void** gc = NULL;
 	
-	char* Rfifo = String(RUN_PATH "/%ld.in", pier);	
-	char* Wfifo = String(RUN_PATH "/%ld.out", pier);	
-	ASSERT(Rfifo == NULL || Wfifo == NULL);
-	
+	char* Wfifo = String(RUN_PATH "/%ld.%ld", pier, pid);	
+	ASSERT(Wfifo == NULL);
 	gcCollect(&gc, &Wfifo);
-	gcCollect(&gc, &Rfifo);
-	
-	int status = 0;
 
-	status = MkFifo(Rfifo);
-	ASSERT(-1 == status);
+	int Wfd = open(Wfifo, O_WRONLY, 0);
+	ASSERT(-1 == Wfd);
 	
-	status = MkFifo(Wfifo);
-	ASSERT(-1 == status);
+	int n_read		= 0;
+	size_t total		= 0;
+	char buf[PIPE_BUF]	= {'\0', };
+	errno = 0;
+	while((n_read = read(0, buf, sizeof(buf))))
+	{
+		if(-1 == n_read)
+		{
+			if(errno == EINTR
+				|| errno == EAGAIN
+				|| errno == EWOULDBLOCK
+				|| errno == EPIPE)
+			{
+				errno = 0;
+				continue;
+			}
+			break;
+		}
+
+		errno = 0;
+		int n = Write(Wfd, buf, n_read);
+		ASSERT(errno);
+		total += n_read;
+	}
+	close(Wfd);
 	
-	const char* answer = "Status: 200 OK\r\n\r\n";
+	char* answer = "Status: 200 OK" NL NL;
+	Write(1, answer, strlen(answer));
+	
+	gcClean(gc);
+
+	return 0;
+}
+
+static int Connect(long connect) // /1
+{
+	ASSERT(!connect);
+	void** gc = NULL;
+	
+	char* Rfifo = String(RUN_PATH "/%ld", connect);	
+	ASSERT(Rfifo == NULL);
+	gcCollect(&gc, &Rfifo);
+
+	ASSERT(-1 == MkFifo(Rfifo));
+	
+	char* answer = String("Status: 200 OK" NL NL NL);
+	ASSERT(answer == NULL);
+	gcCollect(&gc, &answer);
 	Write(1, answer, strlen(answer));
 
-	TRACE("CONNECT> Wait data from %s", Rfifo);
-	
 	for (;;)
 	{
-		int Rfd = Open(Rfifo, O_RDONLY, 0);
+		int Rfd = open(Rfifo, O_RDONLY | O_NONBLOCK, 0);		
+		ASSERT(-1 == Rfd);
+ 
+		fd_set set;
+		FD_ZERO(&set);
+		FD_SET(Rfd, &set);
+		struct timeval t = { SEC_TO_PING, 0 };
+		int rd = select(Rfd + 1, &set, NULL, NULL, &t);
+		ASSERT(-1 == rd);
+		if (!rd)
+		{
+			Write(1, NL, strlen(NL));
+			close(Rfd);
+			continue;
+		}
+
 		int n_read		= 0;
 		size_t total		= 0;
 		char buf[PIPE_BUF]	= {'\0', };
@@ -137,7 +211,6 @@ static int Connect(long pier)
 					errno = 0;
 					continue;
 				}
-				close(Rfd);
 				break;
 			}
 
@@ -147,57 +220,69 @@ static int Connect(long pier)
 			total += n_read;
 		}
 		close(Rfd);
-
-		int Wfd = Open(Wfifo, O_WRONLY, 0);
-		answer = "Status: 200 OK\r\n\r\nOK!\r\n";
-		Write(Wfd, answer, strlen(answer));
-		close(Wfd); 
 	}
 
 	unlink(Rfifo);
-	unlink(Wfifo);
 	gcClean(gc);
 }
 
-static int Pier(long pier)
+static int Pier(long connect)
 {
-	ASSERT(!pier);
-	
+	ASSERT(!connect);	
 	void** gc = NULL;
+	pid_t my_pid = getpid();
 
 	char** lstEnv = getEnv();
 	ASSERT(lstEnv == NULL);
 
-	char* Wfifo = String(RUN_PATH "/%ld.in", pier);	
-	char* Rfifo = String(RUN_PATH "/%ld.out", pier);	
-	ASSERT(Rfifo == NULL || Wfifo == NULL);
-	
-	gcCollect(&gc, &Wfifo);
+	char* Rfifo = String(RUN_PATH "/%ld.%ld", connect, my_pid);	
+	ASSERT(Rfifo == NULL);
 	gcCollect(&gc, &Rfifo);
-
-	int Wfd = Open(Wfifo, O_WRONLY, 0);
 	
-	// TODO: replace writeToFileFormat with writeToPipeFormat with max chank = PIPE_BUF
-	int header = writeToFileFormat(Wfd, "%s %s %s" NL, 
+	ASSERT(-1 == MkFifo(Rfifo));		
+
+	char* Wfifo = String(RUN_PATH "/%ld", connect);	
+	ASSERT(Wfifo == NULL);
+	gcCollect(&gc, &Wfifo);
+
+	int Wfd = open(Wfifo, O_WRONLY, 0);
+	if (-1 == Wfd)
+	{
+		char* answer = String("Status: 434 Requested host unavailable" NL NL \
+			"434 Requested host unavailable.");
+		gcCollect(&gc, &answer);
+		Write(1, answer, strlen(answer));
+		lstFree(lstEnv);
+		gcClean(gc);
+
+		return 0;
+	}
+	
+	char* header = String("%d" NL, my_pid);	
+	ASSERT(header == NULL);
+	gcCollect(&gc, &header);
+
+	ASSERT(-1 == replaceStrFormat(&header, "", "%s %s %s" NL, 
 		getenv("REQUEST_METHOD") ? getenv("REQUEST_METHOD") : "GET", 
 		getenv("REQUEST_URI"),
-		getenv("SERVER_PROTOCOL") ? getenv("SERVER_PROTOCOL") : "HTTP/1.1");	
-	ASSERT(-1 == header);
+		getenv("SERVER_PROTOCOL") ? getenv("SERVER_PROTOCOL") : "HTTP/1.1"));
 
 	char** lstHttpEnv = lstEgrep(lstEnv, "^HTTP_.+$");
 	if (lstHttpEnv)
 	{
-		writeHeaderLst(Wfd, lstHttpEnv);
+		addHeader(&header, lstHttpEnv);
 	}
 	
 	char** lstContentEnv = lstEgrep(lstEnv, "^CONTENT_.+$");
 	if (lstContentEnv)
 	{
-		writeHeaderLst(Wfd, lstContentEnv);
+		addHeader(&header, lstContentEnv);
 	}
 	
-	header = writeToFileFormat(Wfd, "" NL); 
-	ASSERT(-1 == header);
+	ASSERT(-1 == replaceStrFormat(&header, "", NL));
+	errno = 0;
+	int n = Write(Wfd, header, strlen(header));
+	ASSERT(errno);
 
 	int n_read		= 0;
 	size_t total		= 0;
@@ -215,7 +300,6 @@ static int Pier(long pier)
 				errno = 0;
 				continue;
 			}
-
 			break;
 		}
 
@@ -226,44 +310,49 @@ static int Pier(long pier)
 	}
 	close(Wfd);
 
-	/*
-	char* data = NULL;
-	gcCollect(&gc, &data);
-	errno = 0;
-	size_t n_read = Read(0, &data);
-	ASSERT(errno);
-	//TRACE("PIER> read %ld bytes", n_read);
-	errno = 0;
-	int n_body = Write(Wfd, data, n_read);
-	ASSERT(errno);
-	close(Wfd);
-	//TRACE("PIER> write %ld bytes", n_body);
-	*/
+	int Rfd = open(Rfifo, O_RDONLY, 0);	
+	ASSERT(-1 == Rfd);
 
-	int Rfd = Open(Rfifo, O_RDONLY, 0);	
-	char* data2 = NULL;
-	gcCollect(&gc, &data2);
+	n_read	= 0;
+	total	= 0;
 	errno = 0;
-	size_t n_read2 = Read(Rfd, &data2);
-	ASSERT(errno);
-	close(Rfd);
-	//TRACE("PIER> read %ld bytes", n_read2);
-	errno = 0;
-	int n_body2 = Write(1, data2, n_read2);
-	ASSERT(errno);
-	//TRACE("PIER> write %ld bytes", n_body2);
-	
+	while((n_read = read(Rfd, buf, sizeof(buf))))
+	{
+		if(-1 == n_read)
+		{
+			if(errno == EINTR
+				|| errno == EAGAIN
+				|| errno == EWOULDBLOCK
+				|| errno == EPIPE)
+			{
+				errno = 0;
+				continue;
+			}
+			break;
+		}
+
+		errno = 0;
+		int n = Write(1, buf, n_read);
+		ASSERT(errno);
+		total += n_read;
+	}
+	close(Wfd);
+		
 	lstFree(lstEnv);
 	lstFree(lstHttpEnv);
 	lstFree(lstContentEnv);
 	gcClean(gc);
 }
 
-static void writeHeaderLst(int Wfd, char** lst)
+static void addHeader(char** header, char** lst)
 {
 	int i = 0;
 	for (; lst[i]; ++i)
 	{
+		if (lst[i] == strstr(lst[i], "HTTP_PID="))
+		{
+			continue;
+		}
 		char* p = NULL;
 		char* header1 = NULL;
 		if (lst[i] == strstr(lst[i], "HTTP_"))
@@ -298,8 +387,8 @@ static void writeHeaderLst(int Wfd, char** lst)
 				*p = '-';
 			}
 		}
-		int header = writeToFileFormat(Wfd, "%s: %s" NL, header1, header2); 
-		ASSERT(-1 == header);
+		 
+		ASSERT(-1 == replaceStrFormat(header, "", "%s: %s" NL, header1, header2));
 	}
 }
 
