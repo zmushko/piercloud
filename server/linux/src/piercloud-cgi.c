@@ -11,8 +11,6 @@
 
 #include "trace.h"
 #include "liblst.h"
-#include "network.h"
-#include "client.h"
 
 extern char**	environ;
 static char**	getEnv();
@@ -23,7 +21,7 @@ static void	addHeader(char** header, char** lst);
 
 
 #define RUN_PATH	"/tmp/piercloud"
-#define NL		"\r\n"
+#define NL		"\n"
 #define SEC_TO_PING	20
 
 static volatile sig_atomic_t got_SIGTERM = 0;
@@ -161,7 +159,7 @@ static int Respond(long pier, long pid)
 	return 0;
 }
 
-static int Connect(long connect) // /1
+static int Connect(long connect)
 {
 	ASSERT(!connect);
 	void** gc = NULL;
@@ -188,13 +186,14 @@ static int Connect(long connect) // /1
 		struct timeval t = { SEC_TO_PING, 0 };
 		int rd = select(Rfd + 1, &set, NULL, NULL, &t);
 		ASSERT(-1 == rd);
+		FD_CLR(Rfd, &set);
 		if (!rd)
 		{
 			Write(1, NL, strlen(NL));
 			close(Rfd);
 			continue;
 		}
-
+		
 		int n_read		= 0;
 		size_t total		= 0;
 		char buf[PIPE_BUF]	= {'\0', };
@@ -215,11 +214,12 @@ static int Connect(long connect) // /1
 			}
 
 			errno = 0;
-			Write(1, buf, n_read);
+			int n = Write(1, buf, n_read);
 			ASSERT(errno);
-			total += n_read;
+			total += n;
 		}
 		close(Rfd);
+		TRACE("COMET> Read %ld bytes", total);
 	}
 
 	unlink(Rfifo);
@@ -306,9 +306,10 @@ static int Pier(long connect)
 		errno = 0;
 		int n = Write(Wfd, buf, n_read);
 		ASSERT(errno);
-		total += n_read;
+		total += n;
 	}
 	close(Wfd);
+	TRACE("PIER> Send %ld bytes", total);
 
 	int Rfd = open(Rfifo, O_RDONLY, 0);	
 	ASSERT(-1 == Rfd);
