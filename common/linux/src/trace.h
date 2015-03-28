@@ -15,6 +15,12 @@
 #define TRACEFILE	"/var/log/piercloud.log"
 #define DATATRACE	"/var/log/.piercloud_data_trace"
 
+#define PRINTF(...)	do{ \
+				printf("LINE:%d:", __LINE__); \
+				printf(__VA_ARGS__); \
+			}while(0)
+
+
 #define TRACE(...)	do{ \
 				if (!access(TRACEFILE, F_OK)) \
 				{ \
@@ -48,9 +54,9 @@
 						strftime(datetime, sizeof(datetime), "%b %e %Y %H:%M:%S", tmp); \
 					} \
 					fprintf(f, "- %s %s:%d pid:%d\n  ", datetime, __FILE__, __LINE__, getpid()); \
-					fprintf(f, "*** ERROR ***:"); \
+					fprintf(f, "*** ERROR *** "); \
 					fprintf(f, __VA_ARGS__); \
-					fprintf(f, ", errno=%d:%s\n", safe_errno, strerror(safe_errno)); \
+					fprintf(f, " Errno %d %s\n", safe_errno, safe_errno ? strerror(safe_errno) : ""); \
 					fclose(f); \
 				} \
 				errno = safe_errno; \
@@ -72,9 +78,9 @@
 							strftime(datetime, sizeof(datetime), "%b %e %Y %H:%M:%S", tmp); \
 						} \
 						fprintf(f, "- %s %s:%d pid:%d\n  ", datetime, __FILE__, __LINE__, getpid()); \
-						fprintf(f, "ABORT:"); \
+						fprintf(f, "ABORT "); \
 						fprintf(f, "%s", #A); \
-						fprintf(f, ", errno=%d:%s\n", safe_errno, safe_errno ? strerror(safe_errno) : ""); \
+						fprintf(f, " Errno %d %s\n", safe_errno, safe_errno ? strerror(safe_errno) : ""); \
 						fclose(f); \
 					} \
 					errno = safe_errno; \
@@ -85,8 +91,9 @@
 #define TDATA(...)	do{ \
 				if (!access(TRACEFILE, F_OK) && !access(DATATRACE, F_OK)) \
 				{ \
-					FILE* f = fopen(TRACEFILE, "a"); \
+					FILE* f = fopen(TRACEFILE ".raw", "a"); \
 					fprintf(f, __VA_ARGS__); \
+					fflush(f); \
 					fclose(f); \
 				} \
 			}while(0)
