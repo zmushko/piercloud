@@ -21,18 +21,19 @@ static void	addHeader(char** header, char** lst);
 
 
 #define RUN_PATH	"/tmp/piercloud"
-#define NL		"\n"
+#define NL		"\r\n"
 #define SEC_TO_PING	20
+
+#define STDIN		0
+#define STDOUT		1
 
 static volatile sig_atomic_t got_SIGTERM = 0;
 
-/*
 static void sig_term_handler(int sig)
 {
 	(void)sig;
 	got_SIGTERM = 1;
 }
-*/
 
 main()
 {
@@ -46,7 +47,7 @@ main()
 	*/
 
 	void** gc;
-	remove(RUN_PATH);
+	//remove(RUN_PATH);
 	errno = 0;
 	if (-1 == mkdir(RUN_PATH, 00777))
 	{
@@ -129,7 +130,7 @@ static int Respond(long pier, long pid)
 	size_t total		= 0;
 	char buf[PIPE_BUF]	= {'\0', };
 	errno = 0;
-	while((n_read = read(0, buf, sizeof(buf))))
+	while((n_read = read(STDIN, buf, sizeof(buf))))
 	{
 		if(-1 == n_read)
 		{
@@ -152,7 +153,7 @@ static int Respond(long pier, long pid)
 	close(Wfd);
 	
 	char* answer = "Status: 200 OK" NL NL;
-	Write(1, answer, strlen(answer));
+	Write(STDOUT, answer, strlen(answer));
 	
 	gcClean(gc);
 
@@ -164,13 +165,21 @@ static int Connect(long connect)
 	ASSERT(!connect);
 	void** gc = NULL;
 	
+	executeShellFormat("/bin/rm -f " RUN_PATH "/%ld", connect);
+	executeShellFormat("/bin/rm -f " RUN_PATH "/%ld.*", connect);
+
 	char* Rfifo = String(RUN_PATH "/%ld", connect);	
 	ASSERT(Rfifo == NULL);
 	gcCollect(&gc, &Rfifo);
 
+	char* lock_name = String(RUN_PATH "/%ld.lock", connect);	
+	ASSERT(lock_name == NULL);
+	gcCollect(&gc, &lock_name);
+
+	ASSERT(-1 == creat(lock_name, 00600));	
 	ASSERT(-1 == MkFifo(Rfifo));
 	
-	char* answer = String("Status: 200 OK" NL NL NL);
+	char* answer = String("Status: 200 OK" NL NL);
 	ASSERT(answer == NULL);
 	gcCollect(&gc, &answer);
 	Write(1, answer, strlen(answer));
@@ -179,7 +188,7 @@ static int Connect(long connect)
 	{
 		int Rfd = open(Rfifo, O_RDONLY | O_NONBLOCK, 0);		
 		ASSERT(-1 == Rfd);
- 
+	
 		fd_set set;
 		FD_ZERO(&set);
 		FD_SET(Rfd, &set);
@@ -189,7 +198,9 @@ static int Connect(long connect)
 		FD_CLR(Rfd, &set);
 		if (!rd)
 		{
-			Write(1, NL, strlen(NL));
+			errno = 0;
+			Write(STDOUT, "0", 1);
+			ASSERT(errno);
 			close(Rfd);
 			continue;
 		}
@@ -198,7 +209,7 @@ static int Connect(long connect)
 		size_t total		= 0;
 		char buf[PIPE_BUF]	= {'\0', };
 		errno = 0;
-		while((n_read = read(Rfd, buf, sizeof(buf))))
+		while((n_read = read(Rfd, buf, sizeof(buf) - 1)))
 		{
 			if(-1 == n_read)
 			{
@@ -214,15 +225,15 @@ static int Connect(long connect)
 			}
 
 			errno = 0;
-			int n = Write(1, buf, n_read);
+			int n = Write(STDOUT, buf, n_read);
 			ASSERT(errno);
 			total += n;
 		}
 		close(Rfd);
-		TRACE("COMET> Read %ld bytes", total);
 	}
 
 	unlink(Rfifo);
+	unlink(lock_name);
 	gcClean(gc);
 }
 
@@ -245,18 +256,59 @@ static int Pier(long connect)
 	ASSERT(Wfifo == NULL);
 	gcCollect(&gc, &Wfifo);
 
-	int Wfd = open(Wfifo, O_WRONLY, 0);
+	char* lock_name = String(RUN_PATH "/%ld.lock", connect);	
+	ASSERT(lock_name == NULL);
+	gcCollect(&gc, &lock_name);
+
+	int Lfd = open(lock_name, O_RDWR);
+	if (-1 == Lfd)
+	{
+		char* answer = String("Status: 434 Requested host unavailable" NL NL \
+			"434 Requested host unavailable.");
+		gcCollect(&gc, &answer);
+		Write(STDOUT, answer, strlen(answer));
+		lstFree(lstEnv);
+		gcClean(gc);
+		unlink(Rfifo);
+
+		return 0;
+	}
+
+	if(-1 == lockf(Lfd, F_LOCK, 0L))
+	{
+		char* answer = String("Status: 434 Requested host unavailable" NL NL \
+			"434 Requested host unavailable.");
+		gcCollect(&gc, &answer);
+		Write(STDOUT, answer, strlen(answer));
+		lstFree(lstEnv);
+		gcClean(gc);
+		unlink(Rfifo);
+
+		return 0;
+	}
+
+	int Wfd = open(Wfifo, O_WRONLY | O_SYNC, 0);
 	if (-1 == Wfd)
 	{
 		char* answer = String("Status: 434 Requested host unavailable" NL NL \
 			"434 Requested host unavailable.");
 		gcCollect(&gc, &answer);
-		Write(1, answer, strlen(answer));
+		Write(STDOUT, answer, strlen(answer));
 		lstFree(lstEnv);
 		gcClean(gc);
+		unlink(Rfifo);
 
 		return 0;
 	}
+
+	/*
+	int i = 0;
+	char** lstEnv2 = getEnv();
+	for (; lstEnv2[i]; ++i)
+	{
+		TRACE("%s\n", lstEnv2[i]);
+	}
+	*/
 	
 	char* header = String("%d" NL, my_pid);	
 	ASSERT(header == NULL);
@@ -308,8 +360,9 @@ static int Pier(long connect)
 		ASSERT(errno);
 		total += n;
 	}
-	close(Wfd);
-	TRACE("PIER> Send %ld bytes", total);
+	ASSERT(-1 == close(Wfd));
+
+	//TRACE("\n%d %d >>\n", getpid(), time(NULL));
 
 	int Rfd = open(Rfifo, O_RDONLY, 0);	
 	ASSERT(-1 == Rfd);
@@ -333,16 +386,24 @@ static int Pier(long connect)
 		}
 
 		errno = 0;
-		int n = Write(1, buf, n_read);
+		int n = Write(STDOUT, buf, n_read);
 		ASSERT(errno);
 		total += n_read;
 	}
-	close(Wfd);
-		
+	
+	//TRACE("\n%d %d <<\n", getpid(), time(NULL));
+	
+	ASSERT(-1 == close(Rfd));
+	ASSERT(-1 == lockf(Lfd, F_ULOCK, 0L));
+	ASSERT(-1 == close(Lfd));
+	ASSERT(-1 == unlink(Rfifo));
+
 	lstFree(lstEnv);
 	lstFree(lstHttpEnv);
 	lstFree(lstContentEnv);
 	gcClean(gc);
+	
+	return 0;
 }
 
 static void addHeader(char** header, char** lst)
@@ -350,10 +411,6 @@ static void addHeader(char** header, char** lst)
 	int i = 0;
 	for (; lst[i]; ++i)
 	{
-		if (lst[i] == strstr(lst[i], "HTTP_PID="))
-		{
-			continue;
-		}
 		char* p = NULL;
 		char* header1 = NULL;
 		if (lst[i] == strstr(lst[i], "HTTP_"))
@@ -404,4 +461,3 @@ static char** getEnv()
 	
 	return lst;
 }
-
