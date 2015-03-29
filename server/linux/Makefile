@@ -13,3 +13,9 @@ liblst : ../../common/linux/src/liblst/liblst.*
 
 clean :
 	-rm *.o piercloud.cgi
+
+deploy :
+	-ssh piercloud.com apachectl stop
+	-ssh piercloud.com killall -9 piercloud.cgi
+	scp piercloud.cgi piercloud.com:/var/www/cgi-bin/piercloud.cgi	
+	-ssh piercloud.com apachectl start

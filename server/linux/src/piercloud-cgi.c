@@ -27,29 +27,11 @@ static void	addHeader(char** header, char** lst);
 #define STDIN		0
 #define STDOUT		1
 
-static volatile sig_atomic_t got_SIGTERM = 0;
-
-static void sig_term_handler(int sig)
-{
-	(void)sig;
-	got_SIGTERM = 1;
-}
-
 main()
 {
-	/*
-	struct sigaction sa;
-	memset(&sa, 0, sizeof(struct sigaction));
-	sa.sa_flags = 0;
-	sa.sa_handler = sig_term_handler;
-	sigemptyset(&sa.sa_mask);
-	ASSERT(-1 == sigaction(SIGTERM, &sa, NULL));
-	*/
-
 	void** gc;
-	//remove(RUN_PATH);
 	errno = 0;
-	if (-1 == mkdir(RUN_PATH, 00777))
+	if (-1 == mkdir(RUN_PATH, 00700))
 	{
 		ASSERT(errno != EEXIST);
 		errno = 0;
@@ -119,7 +101,7 @@ static int Respond(long pier, long pid)
 	ASSERT(!pier || !pid);	
 	void** gc = NULL;
 	
-	char* Wfifo = String(RUN_PATH "/%ld.%ld", pier, pid);	
+	char* Wfifo = String(RUN_PATH "/%ld.0/%ld", pier, pid);	
 	ASSERT(Wfifo == NULL);
 	gcCollect(&gc, &Wfifo);
 
@@ -165,9 +147,6 @@ static int Connect(long connect)
 	ASSERT(!connect);
 	void** gc = NULL;
 	
-	executeShellFormat("/bin/rm -f " RUN_PATH "/%ld", connect);
-	executeShellFormat("/bin/rm -f " RUN_PATH "/%ld.*", connect);
-
 	char* Rfifo = String(RUN_PATH "/%ld", connect);	
 	ASSERT(Rfifo == NULL);
 	gcCollect(&gc, &Rfifo);
@@ -246,7 +225,16 @@ static int Pier(long connect)
 	char** lstEnv = getEnv();
 	ASSERT(lstEnv == NULL);
 
-	char* Rfifo = String(RUN_PATH "/%ld.%ld", connect, my_pid);	
+	char* Rpath = String(RUN_PATH "/%ld.0", connect);	
+	ASSERT(Rpath == NULL);
+	gcCollect(&gc, &Rpath);
+	if (-1 == mkdir(Rpath, 00700))
+	{
+		ASSERT(errno != EEXIST);
+		errno = 0;
+	}
+
+	char* Rfifo = String(RUN_PATH "/%ld.0/%ld", connect, my_pid);	
 	ASSERT(Rfifo == NULL);
 	gcCollect(&gc, &Rfifo);
 	
